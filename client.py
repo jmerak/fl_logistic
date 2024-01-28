@@ -1,60 +1,80 @@
-import models
 import tensorflow as tf
+import numpy as np
+from collections import namedtuple
+import math
 
+from models import AlexNet, logistic_regression_model
+from datasets import Dataset
 
-class Client(object):
+# The definition of fed model
+FedModel = namedtuple('FedModel', 'X Y DROP_RATE train_op loss_op acc_op')
 
-    def __init__(self, conf, model, train_x, train_y, id=-1):
+class Clients:
+    def __init__(self, input_shape, num_classes, learning_rate, clients_num):
+        self.graph = tf.Graph()
+        self.sess = tf.Session(graph=self.graph)
 
-        self.conf = conf
+        # Call the create function to build the computational graph of AlexNet
+        # net = AlexNet(input_shape, num_classes, learning_rate, self.graph)
 
-        init = tf.global_variables_initializer()
-        self.sess = tf.Session()
-        self.sess.run(init)
-        self.local_model = models.get_model(self.conf["model_name"])
+        net = logistic_regression_model(input_shape, num_classes, learning_rate, self.graph)
+        self.model = FedModel(*net)
 
-        self.client_id = id
+        # initialize
+        with self.graph.as_default():
+            self.sess.run(tf.global_variables_initializer())
 
-        self.train_x = train_x
-        self.train_y = train_y
+        # Load Cifar-10 dataset
+        # NOTE: len(self.dataset.train) == clients_num
+        self.dataset = Dataset(tf.keras.datasets.cifar10.load_data,
+                        split=clients_num)
 
-        all_range = list(range(len(self.train_dataset)))
-        data_len = int(len(self.train_dataset) / self.conf['no_models'])
-        train_indices = all_range[id * data_len: (id + 1) * data_len]
+    def run_test(self, num):
+        with self.graph.as_default():
+            batch_x, batch_y = self.dataset.test.next_batch(num)
+            feed_dict = {
+                self.model.X: batch_x,
+                self.model.Y: batch_y,
+                self.model.DROP_RATE: 0
+            }
+        return self.sess.run([self.model.acc_op, self.model.loss_op],
+                             feed_dict=feed_dict)
 
-        self.train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=conf["batch_size"],
-                                                        sampler=torch.utils.data.sampler.SubsetRandomSampler(
-                                                            train_indices))
+    def train_epoch(self, cid, batch_size=32, dropout_rate=0.5):
+        """
+            Train one client with its own data for one epoch
+            cid: Client id
+        """
+        dataset = self.dataset.train[cid]
 
-    def local_train(self, model):
+        with self.graph.as_default():
+            for _ in range(math.ceil(dataset.size / batch_size)):
+                batch_x, batch_y = dataset.next_batch(batch_size)
+                feed_dict = {
+                    self.model.X: batch_x,
+                    self.model.Y: batch_y,
+                    self.model.DROP_RATE: dropout_rate
+                }
+                self.sess.run(self.model.train_op, feed_dict=feed_dict)
 
-        for name, param in model.state_dict().items():
-            self.local_model.state_dict()[name].copy_(param.clone())
+    def get_client_vars(self):
+        """ Return all of the variables list """
+        with self.graph.as_default():
+            client_vars = self.sess.run(tf.trainable_variables())
+        return client_vars
 
-        # print(id(model))
-        optimizer = torch.optim.SGD(self.local_model.parameters(), lr=self.conf['lr'],
-                                    momentum=self.conf['momentum'])
-        # print(id(self.local_model))
-        self.local_model.train()
-        for e in range(self.conf["local_epochs"]):
+    def set_global_vars(self, global_vars):
+        """ Assign all of the variables with global vars """
+        with self.graph.as_default():
+            all_vars = tf.trainable_variables()
+            for variable, value in zip(all_vars, global_vars):
+                variable.load(value, self.sess)
 
-            for batch_id, batch in enumerate(self.train_loader):
-                data, target = batch
+    def choose_clients(self, ratio=1.0):
+        """ randomly choose some clients """
+        client_num = self.get_clients_num()
+        choose_num = math.ceil(client_num * ratio)
+        return np.random.permutation(client_num)[:choose_num]
 
-                if torch.cuda.is_available():
-                    data = data.cuda()
-                    target = target.cuda()
-
-                optimizer.zero_grad()
-                output = self.local_model(data)
-                loss = torch.nn.functional.cross_entropy(output, target)
-                loss.backward()
-
-                optimizer.step()
-            print("Epoch %d done." % e)
-        diff = dict()
-        for name, data in self.local_model.state_dict().items():
-            diff[name] = (data - model.state_dict()[name])
-        # print(diff[name])
-
-        return diff
+    def get_clients_num(self):
+        return len(self.dataset.train)

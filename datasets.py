@@ -1,32 +1,51 @@
+import numpy as np
+from tensorflow.keras.utils import to_categorical
 from tensorflow.examples.tutorials.mnist import input_data
 
-'''
-MNIST数据集：此处采用tensorflow sample所带的mnist数据集的预处理脚本，input_data.py
-实现了数据的读取，向量化。
-number of trian data is 55000
-number of test data is 10000
-每个图片28*28=784维
-10分类
-'''
-# 1.数据读取
-'''
-one_hot:一种映射编码方式
-特征并不总是连续值，而有可能是分类值。比如星期类型，有星期一、星期二、……、星期日
-若用[1,7]进行编码，求距离的时候周一和周日距离很远（7），这不合适。
-故周一用[1 0 0 0 0 0 0],周日用[0 0 0 0 0 0 1],这就是one-hot编码
-对于离散型特征，基于树的方法是不需要使用one-hot编码的，例如随机森林等。
-基于距离的模型，都是要使用one-hot编码，例如神经网络等。
-'''
+
+class BatchGenerator:
+    def __init__(self, x, yy):
+        self.x = x
+        self.y = yy
+        self.size = len(x)
+        self.random_order = list(range(len(x)))
+        np.random.shuffle(self.random_order)
+        self.start = 0
+        return
+
+    def next_batch(self, batch_size):
+        perm = self.random_order[self.start:self.start + batch_size]
+
+        self.start += batch_size
+        if self.start > self.size:
+            self.start = 0
+
+        return self.x[perm], self.y[perm]
+
+    # support slice
+    def __getitem__(self, val):
+        return self.x[val], self.y[val]
 
 
-def get_dataset(dir):
-    minist = input_data.read_data_sets(dir, one_hot=True)
-    train_x = minist.train.images
-    train_y = minist.train.labels
-    test_x = minist.test.images
-    test_y = minist.test.labels
-    print("----------MNIST loaded----------------")
-    print("train shape:", train_x.shape, train_y.shape)
-    print("test  shape:", test_x.shape, test_y.shape)
+class Dataset(object):
+    def __init__(self, load_data_func, one_hot=True, split = 0):
+        minist = input_data.read_data_sets('data/', one_hot=True)
+        x_train = minist.train.images
+        y_train = minist.train.labels
+        x_test = minist.test.images
+        y_test = minist.test.labels
+        print("Dataset: train-%d, test-%d" % (len(x_train), len(x_test)))
 
-    return train_x, train_y, test_x, test_y
+        if split == 0:
+            self.train = BatchGenerator(x_train, y_train)
+        else:
+            self.train = self.splited_batch(x_train, y_train, split)
+
+        self.test = BatchGenerator(x_test, y_test)
+
+    def splited_batch(self, x_data, y_data, split):
+        res = []
+        for x, y in zip(np.split(x_data, split), np.split(y_data, split)):
+            assert len(x) == len(y)
+            res.append(BatchGenerator(x, y))
+        return res

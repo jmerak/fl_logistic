@@ -1,62 +1,70 @@
 import tensorflow as tf
-import models
+from tqdm import tqdm
 
-'''
-服务端主要功能是将被选择的客户端上传的本地模型进行模型聚合。
-一个复杂完整的联邦学习框架需要的功能由很多，包括网络监控、对失败的节点发起重连信号等
-本实现是在实现的简单联邦学习，不涉及网络通信，仅实现模型聚合功能
-'''
-
-#1.定义构造函数
-'''
-构造函数中，服务端工作包括：
-1.将配置信息拷贝到服务端中
-2.初始化模型信息
-'''
+from client import Clients
 
 
-class Server(object):
+def buildClients(num):
+    learning_rate = 0.0001
+    num_input = 28  # image shape: 28 * 28
+    num_classes = 10  # minist total classes (0-9 digits)
 
-    def __init__(self, conf, eval_dataset):
+    # create Client and model
+    return Clients(input_shape=[None, num_input * num_input],
+                   num_classes=num_classes,
+                   learning_rate=learning_rate,
+                   clients_num=num)
 
-        self.conf = conf
 
-        self.global_model = models.get_model(self.conf["model_name"])
+def run_global_test(client, global_vars, test_num):
+    client.set_global_vars(global_vars)
+    acc, loss = client.run_test(test_num)
+    print("[epoch {}, {} inst] Testing ACC: {:.4f}, Loss: {:.4f}".format(
+        ep + 1, test_num, acc, loss))
 
-        self.eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=self.conf["batch_size"], shuffle=True)
 
-    def model_aggregate(self, weight_accumulator):
-        for name, data in self.global_model.state_dict().items():
+#### SOME TRAINING PARAMS ####
+CLIENT_NUMBER = 50
+CLIENT_RATIO_PER_ROUND = 0.40
+epoch = 720
 
-            update_per_layer = weight_accumulator[name] * self.conf["lambda"]
+#### CREATE CLIENT AND LOAD DATASET ####
+client = buildClients(CLIENT_NUMBER)
 
-            if data.type() != update_per_layer.type():
-                data.add_(update_per_layer.to(torch.int64))
-            else:
-                data.add_(update_per_layer)
+#### BEGIN TRAINING ####
+global_vars = client.get_client_vars()
+for ep in range(epoch):
+    # We are going to sum up active clients' vars at each epoch
+    client_vars_sum = None
 
-    def model_eval(self):
-        self.global_model.eval()
+    # Choose some clients that will train on this epoch
+    random_clients = client.choose_clients(CLIENT_RATIO_PER_ROUND)
 
-        total_loss = 0.0
-        correct = 0
-        dataset_size = 0
-        for batch_id, batch in enumerate(self.eval_loader):
-            data, target = batch
-            dataset_size += data.size()[0]
+    # Train with these clients
+    for client_id in tqdm(random_clients, ascii=True):
+        # Restore global vars to client's model
+        client.set_global_vars(global_vars)
 
-            if torch.cuda.is_available():
-                data = data.cuda()
-                target = target.cuda()
+        # train one client
+        client.train_epoch(cid=client_id)
 
-            output = self.global_model(data)
+        # obtain current client's vars
+        current_client_vars = client.get_client_vars()
 
-            total_loss += torch.nn.functional.cross_entropy(output, target,
-                                                            reduction='sum').item()  # sum up batch loss
-            pred = output.data.max(1)[1]  # get the index of the max log-probability
-            correct += pred.eq(target.data.view_as(pred)).cpu().sum().item()
+        # sum it up
+        if client_vars_sum is None:
+            client_vars_sum = current_client_vars
+        else:
+            for cv, ccv in zip(client_vars_sum, current_client_vars):
+                cv += ccv
 
-        acc = 100.0 * (float(correct) / float(dataset_size))
-        total_l = total_loss / dataset_size
+    # obtain the avg vars as global vars
+    global_vars = []
+    for var in client_vars_sum:
+        global_vars.append(var / len(random_clients))
 
-        return acc, total_l
+    # run test on 600 instances
+    run_global_test(client, global_vars, test_num=600)
+
+#### FINAL TEST ####
+run_global_test(client, global_vars, test_num=10000)

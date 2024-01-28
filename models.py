@@ -1,110 +1,196 @@
-# -*- coding: utf-8 -*-
-# @File    : 3_LogisticR_MNIST.py
-# @Time    : 2018/5/20 12:21
-# @Author  : hyfine
-# @Contact : foreverfruit@126.com
-# @Desc    : 逻辑回归实现的MNIST数据集手写体识别任务
-
-from tensorflow.examples.tutorials.mnist import input_data
-import numpy as np
 import tensorflow as tf
+import numpy as np
+from tensorflow.compat.v1.train import AdamOptimizer
 
-'''
-MNIST数据集：此处采用tensorflow sample所带的mnist数据集的预处理脚本，input_data.py
-实现了数据的读取，向量化。
-number of trian data is 55000
-number of test data is 10000
-每个图片28*28=784维
-10分类
-'''
+#### Create tf model for Client ####
 
-# 1.数据读取
-'''
-one_hot:一种映射编码方式
-特征并不总是连续值，而有可能是分类值。比如星期类型，有星期一、星期二、……、星期日
-若用[1,7]进行编码，求距离的时候周一和周日距离很远（7），这不合适。
-故周一用[1 0 0 0 0 0 0],周日用[0 0 0 0 0 0 1],这就是one-hot编码
-对于离散型特征，基于树的方法是不需要使用one-hot编码的，例如随机森林等。
-基于距离的模型，都是要使用one-hot编码，例如神经网络等。
-'''
-minist = input_data.read_data_sets('data/', one_hot=True)
-train_x = minist.train.images
-train_y = minist.train.labels
-test_x = minist.test.images
-test_y = minist.test.labels
-print("----------MNIST loaded----------------")
-print("train shape:", train_x.shape, train_y.shape)
-print("test  shape:", test_x.shape, test_y.shape)
+def logistic_regression_model(input_shape, num_classes, learning_rate, graph):
+    with graph.as_default():
+        X = tf.placeholder(tf.float32, input_shape, name='X')
+        Y = tf.placeholder(tf.float32, [None, num_classes], name='Y')
+        DROP_RATE = tf.placeholder(tf.float32, name='drop_rate')
 
-# 2.建立逻辑回归模型
-# 输入数据，None表示第一维不固定，可理解为占位
-x = tf.placeholder(tf.float32, [None, 784])
-y = tf.placeholder(tf.float32, [None, 10])
-# 参数矩阵(注意维度对齐)
-#w = tf.Variable(tf.random_normal([784, 10]), name='w')
-w = tf.Variable(tf.zeros([784, 10]), name='w')
-b = tf.Variable(tf.zeros([10]), name='b')
-# 预测，softmax(y_ = x*w+b),通过softmax将输出变成10个类的得分
-y_ = tf.nn.softmax(tf.matmul(x, w) + b)
-# cost,这里逻辑回归，softmax，采用对数损失函数，是-log(真实类别概率(得分))
-# reduction_indices=1表示对哪个轴求和，0是行，1为列，这里按列(结果为列)求和，已知每一个样本得到一行结果
-# 求和就是每一个样本的真实分类概率的和，结合logistic regression的对数损失函数定义理解
-# 在reduce_mean，则求所有样本的平均cost
-cost = tf.reduce_mean(-tf.reduce_sum(y * tf.log(y_), reduction_indices=1))
-# optimize
-lr = 0.01
-optm = tf.train.GradientDescentOptimizer(lr).minimize(cost)
+        # Flatten the input
+        flattened = X
 
-# 3.训练
-# argmax:Returns the index with the largest value across dimensions of a tensor
-# equal:Returns the truth value of (x == y) element-wise,returns A `Tensor` of type `bool`.
-result = tf.equal(tf.argmax(y_, 1), tf.argmax(y, 1))
-# cast:将bool的result向量转成float的，然后求mean，得出准确率
-accuracy = tf.reduce_mean(tf.cast(result, tf.float32))
+        # Logistic Regression Layer
+        logits = tf.layers.dense(flattened, num_classes, activation=None, name='logits')
 
-init = tf.global_variables_initializer()
-sess = tf.Session()
-sess.run(init)
+        # loss and optimizer
+        loss_op = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=Y))
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+        train_op = optimizer.minimize(loss_op)
 
-# 训练参数
-'''
-batchsize：在深度学习中，一般采用SGD训练，即每次训练在训练集中取batchsize个样本训练
-iteration：迭代，1个iteration等于使用batchsize个样本训练一次
-epoch：迭代次数，1个epoch等于使用训练集中的全部样本训练一次
-       一个epoch = 所有训练样本的一个正向传递和一个反向传递
-'''
-training_epochs = 50
-batch_size = 100
-display_step = 5
+        # Evaluate model
+        prediction = tf.nn.softmax(logits)
+        pred = tf.argmax(prediction, 1)
 
-# MINI-BATCH
-print('------ TRAINING -----------')
-for epoch in range(training_epochs):
-    avg_cost = 0.
-    # 这样分批是丢弃掉不整除的那部分余数数据,num_batch 批次数目
-    num_batch = int(minist.train.num_examples / batch_size)
-    for i in range(num_batch):
-        # 每一趟epoch中的一个batch训练，这里默认batch中数据会shuffle
-        batch_x, batch_y = minist.train.next_batch(batch_size)
-        feeds = {x: batch_x, y: batch_y}
-        # 训练
-        sess.run(optm, feed_dict=feeds)
-        # 训练结果，这里run返回的是cost值，即当前batch_size样本的平均cost
-        avg_cost += sess.run(cost, feed_dict=feeds)
-        #print(cost.eval())
-    # 平均cost
-    avg_cost /= num_batch
+        # accuracy
+        correct_pred = tf.equal(pred, tf.argmax(Y, 1))
+        accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 
-    # 打印训练log
-    if epoch % display_step == 0:
-        # 分别求测试集和训练集上的准确率
-        # 这里是求accuracy，只有前向过程，没有反向最小化梯度过程，此时模型经过optm已经得到了w和b
-        feeds_train = {x: train_x, y: train_y}
-        feeds_test = {x: test_x, y: test_y}
-        train_acc = sess.run(accuracy, feed_dict=feeds_train)
-        test_acc = sess.run(accuracy, feed_dict=feeds_test)
-        print("Epoch: %03d/%03d cost: %.9f train_acc: %.3f test_acc: %.3f"
-              % (epoch, training_epochs, avg_cost, train_acc, test_acc))
+        return X, Y, DROP_RATE, train_op, loss_op, accuracy
 
-print('---------DONE------------')
 
+def AlexNet(input_shape, num_classes, learning_rate, graph):
+    """
+        Construct the AlexNet model.
+        input_shape: The shape of input (`list` like)
+        num_classes: The number of output classes (`int`)
+        learning_rate: learning rate for optimizer (`float`)
+        graph: The tf computation graph (`tf.Graph`)
+    """
+    with graph.as_default():
+        X = tf.placeholder(tf.float32, input_shape, name='X')
+        Y = tf.placeholder(tf.float32, [None, num_classes], name='Y')
+        DROP_RATE = tf.placeholder(tf.float32, name='drop_rate')
+
+        # 1st Layer: Conv (w ReLu) -> Lrn -> Pool
+        # conv1 = conv(X, 11, 11, 96, 4, 4, padding='VALID', name='conv1')
+        conv1 = conv(X, 11, 11, 96, 2, 2, name='conv1')
+        norm1 = lrn(conv1, 2, 2e-05, 0.75, name='norm1')
+        pool1 = max_pool(norm1, 3, 3, 2, 2, padding='VALID', name='pool1')
+
+        # 2nd Layer: Conv (w ReLu)  -> Lrn -> Pool with 2 groups
+        conv2 = conv(pool1, 5, 5, 256, 1, 1, groups=2, name='conv2')
+        norm2 = lrn(conv2, 2, 2e-05, 0.75, name='norm2')
+        pool2 = max_pool(norm2, 3, 3, 2, 2, padding='VALID', name='pool2')
+
+        # 3rd Layer: Conv (w ReLu)
+        conv3 = conv(pool2, 3, 3, 384, 1, 1, name='conv3')
+
+        # 4th Layer: Conv (w ReLu) splitted into two groups
+        conv4 = conv(conv3, 3, 3, 384, 1, 1, groups=2, name='conv4')
+
+        # 5th Layer: Conv (w ReLu) -> Pool splitted into two groups
+        conv5 = conv(conv4, 3, 3, 256, 1, 1, groups=2, name='conv5')
+        pool5 = max_pool(conv5, 3, 3, 2, 2, padding='VALID', name='pool5')
+
+        # 6th Layer: Flatten -> FC (w ReLu) -> Dropout
+        # flattened = tf.reshape(pool5, [-1, 6*6*256])
+        # fc6 = fc(flattened, 6*6*256, 4096, name='fc6')
+
+        flattened = tf.reshape(pool5, [-1, 1 * 1 * 256])
+        fc6 = fc_layer(flattened, 1 * 1 * 256, 1024, name='fc6')
+        dropout6 = dropout(fc6, DROP_RATE)
+
+        # 7th Layer: FC (w ReLu) -> Dropout
+        # fc7 = fc(dropout6, 4096, 4096, name='fc7')
+        fc7 = fc_layer(dropout6, 1024, 2048, name='fc7')
+        dropout7 = dropout(fc7, DROP_RATE)
+
+        # 8th Layer: FC and return unscaled activations
+        logits = fc_layer(dropout7, 2048, num_classes, relu=False, name='fc8')
+
+        # loss and optimizer
+        loss_op = tf.reduce_mean(
+            tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits,
+                                                        labels=Y))
+        optimizer = AdamOptimizer(
+            learning_rate=learning_rate)
+        train_op = optimizer.minimize(loss_op)
+
+        # Evaluate model
+        prediction = tf.nn.softmax(logits)
+        pred = tf.argmax(prediction, 1)
+
+        # accuracy
+        correct_pred = tf.equal(pred, tf.argmax(Y, 1))
+        accuracy = tf.reduce_mean(
+            tf.cast(correct_pred, tf.float32))
+
+        return X, Y, DROP_RATE, train_op, loss_op, accuracy
+
+
+def conv(x, filter_height, filter_width, num_filters,
+            stride_y, stride_x, name, padding='SAME', groups=1):
+    """Create a convolution layer.
+
+    Adapted from: https://github.com/ethereon/caffe-tensorflow
+    """
+    # Get number of input channels
+    input_channels = int(x.get_shape()[-1])
+
+    # Create lambda function for the convolution
+    convolve = lambda i, k: tf.nn.conv2d(
+        i, k, strides=[1, stride_y, stride_x, 1], padding=padding)
+
+    with tf.variable_scope(name) as scope:
+        # Create tf variables for the weights and biases of the conv layer
+        weights = tf.get_variable('weights',
+                                    shape=[
+                                        filter_height, filter_width,
+                                        input_channels / groups, num_filters
+                                    ])
+        biases = tf.get_variable('biases', shape=[num_filters])
+
+    if groups == 1:
+        conv = convolve(x, weights)
+
+    # In the cases of multiple groups, split inputs & weights and
+    else:
+        # Split input and weights and convolve them separately
+        input_groups = tf.split(axis=3, num_or_size_splits=groups, value=x)
+        weight_groups = tf.split(axis=3,
+                                    num_or_size_splits=groups,
+                                    value=weights)
+        output_groups = [
+            convolve(i, k) for i, k in zip(input_groups, weight_groups)
+        ]
+
+        # Concat the convolved output together again
+        conv = tf.concat(axis=3, values=output_groups)
+
+    # Add biases
+    bias = tf.reshape(tf.nn.bias_add(conv, biases), tf.shape(conv))
+
+    # Apply relu function
+    relu = tf.nn.relu(bias, name=scope.name)
+
+    return relu
+
+
+def fc_layer(x, input_size, output_size, name, relu=True, k=20):
+    """Create a fully connected layer."""
+
+    with tf.variable_scope(name) as scope:
+        # Create tf variables for the weights and biases.
+        W = tf.get_variable('weights', shape=[input_size, output_size])
+        b = tf.get_variable('biases', shape=[output_size])
+        # Matrix multiply weights and inputs and add biases.
+        z = tf.nn.bias_add(tf.matmul(x, W), b, name=scope.name)
+
+    if relu:
+        # Apply ReLu non-linearity.
+        a = tf.nn.relu(z)
+        return a
+
+    else:
+        return z
+
+
+def max_pool(x,
+                filter_height, filter_width,
+                stride_y, stride_x,
+                name, padding='SAME'):
+    """Create a max pooling layer."""
+    return tf.nn.max_pool2d(x,
+        ksize=[1, filter_height, filter_width, 1],
+        strides=[1, stride_y, stride_x, 1],
+        padding=padding,
+        name=name)
+
+
+def lrn(x, radius, alpha, beta, name, bias=1.0):
+    """Create a local response normalization layer."""
+    return tf.nn.local_response_normalization(x,
+        depth_radius=radius,
+        alpha=alpha,
+        beta=beta,
+        bias=bias,
+        name=name)
+
+
+def dropout(x, rate):
+    """Create a dropout layer."""
+    return tf.nn.dropout(x, rate=rate)
